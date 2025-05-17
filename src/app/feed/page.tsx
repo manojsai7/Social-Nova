@@ -2,119 +2,144 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { motion } from 'framer-motion';
+import { useInView } from 'react-intersection-observer';
 import Navbar from '@/components/navigation/Navbar';
 import PostCard from '@/components/feed/PostCard';
-import { createClient } from '@/lib/supabase/client';
+import { supabase } from '@/lib/supabase/client';
 
-// Sample data for demonstration
-const SAMPLE_POSTS = [
-  {
-    id: '1',
-    user: {
-      id: 'user1',
-      username: 'creative_explorer',
-      avatar_url: null,
-    },
-    media_url: 'https://images.unsplash.com/photo-1682687982501-1e58ab814714',
-    media_type: 'image',
-    caption: 'Exploring new horizons and embracing the unknown. #adventure #discovery',
-    created_at: '2023-05-15T10:30:00Z',
-    likes_count: 124,
-    comments_count: 18,
-  },
-  {
-    id: '2',
-    user: {
-      id: 'user2',
-      username: 'design_maven',
-      avatar_url: null,
-    },
-    media_url: 'https://images.unsplash.com/photo-1682695796954-bad0d0f59ff1',
-    media_type: 'image',
-    caption: 'Finding inspiration in the details. What catches your eye? ✨ #design #creativity',
-    created_at: '2023-05-14T15:45:00Z',
-    likes_count: 89,
-    comments_count: 7,
-  },
-  {
-    id: '3',
-    user: {
-      id: 'user3',
-      username: 'urban_photographer',
-      avatar_url: null,
-    },
-    media_url: 'https://images.unsplash.com/photo-1682687218147-9806132dc697',
-    media_type: 'image',
-    caption: 'City lights and urban nights. The city never sleeps and neither does my camera. #urbanphotography #nightshots',
-    created_at: '2023-05-13T20:15:00Z',
-    likes_count: 215,
-    comments_count: 32,
-  },
-];
+interface Post {
+  id: string;
+  user: {
+    id: string;
+    username: string;
+    avatar_url: string | null;
+  };
+  media_url: string;
+  media_type: string;
+  caption: string | null;
+  created_at: string;
+  likes_count: number;
+  comments_count: number;
+}
 
 export default function FeedPage() {
-  const [posts, setPosts] = useState<any[]>([]);
+  const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const { ref, inView } = useInView();
   const router = useRouter();
-  const supabase = createClient();
 
-  useEffect(() => {
-    async function fetchPosts() {
-      // Check if user is authenticated
-      const { data: { session } } = await supabase.auth.getSession();
+  const fetchPosts = async () => {
+    try {
+      setLoading(true);
+      const { data: userData, error: userError } = await supabase.auth.getUser();
       
-      if (!session) {
+      if (userError) {
         router.push('/auth');
         return;
       }
-      
-      // In a real app, we would fetch posts from Supabase
-      // For now, we'll use sample data
-      setPosts(SAMPLE_POSTS);
+
+      const { data, error: fetchError } = await supabase
+        .from('posts')
+        .select(`
+          id,
+          media_url,
+          media_type,
+          caption,
+          created_at,
+          likes_count,
+          comments_count,
+          user:users (
+        id,
+        username,
+        avatar_url
+          )
+        `)
+        .order('created_at', { ascending: false })
+        .range(page * 10, (page + 1) * 10 - 1);
+
+      if (fetchError) throw fetchError;
+
+      setPosts(prev => page === 0 ? data.map(post => ({
+        ...post,
+        user: post.user[0], // Ensure user is a single object, not an array
+      })) as Post[] : [...prev, ...data.map(post => ({
+        ...post,
+        user: post.user[0],
+      })) as Post[]]);
+      setHasMore(data.length === 10);
+      setPage(prev => prev + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load posts');
+    } finally {
       setLoading(false);
     }
-    
-    fetchPosts();
-  }, [router, supabase]);
+  };
 
-  if (loading) {
-    return (
-      <>
-        <Navbar />
-        <div className="flex min-h-screen items-center justify-center">
-          <div className="h-12 w-12 animate-spin rounded-full border-4 border-indigo-600 border-t-transparent"></div>
-        </div>
-      </>
-    );
-  }
+  useEffect(() => {
+    fetchPosts();
+  }, []);
+
+  useEffect(() => {
+    if (inView && hasMore && !loading) {
+      fetchPosts();
+    }
+  }, [inView]);
 
   return (
     <>
       <Navbar />
-      <div className="container mx-auto max-w-2xl px-4 py-8">
-        <h1 className="mb-6 text-2xl font-bold">Your Feed</h1>
-        
-        {posts.length === 0 ? (
-          <div className="rounded-lg bg-white p-8 text-center shadow-md">
-            <h2 className="mb-2 text-xl font-semibold">Welcome to SocialNova!</h2>
-            <p className="mb-4 text-gray-600">
-              Your feed is empty. Start following creators or explore content to populate your feed.
-            </p>
-            <button 
-              onClick={() => router.push('/explore')}
-              className="rounded-md bg-indigo-600 px-4 py-2 text-white hover:bg-indigo-700"
-            >
-              Explore Content
-            </button>
-          </div>
-        ) : (
-          <div>
-            {posts.map((post) => (
-              <PostCard key={post.id} post={post} />
-            ))}
-          </div>
-        )}
-      </div>
+      <main className="container mx-auto max-w-2xl px-4 py-8">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.3 }}
+        >
+          {error ? (
+            <div className="rounded-lg bg-red-50 p-4 text-center">
+              <p className="text-red-800">{error}</p>
+              <button
+                onClick={() => {
+                  setError(null);
+                  setPage(0);
+                  fetchPosts();
+                }}
+                className="mt-2 rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700"
+              >
+                Try Again
+              </button>
+            </div>
+          ) : (
+            <>
+              {posts.map((post) => (
+                <PostCard key={post.id} post={post} />
+              ))}
+              
+              {loading && (
+                <div className="flex justify-center p-4">
+                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent"></div>
+                </div>
+              )}
+              
+              <div ref={ref} className="h-10" />
+              
+              {!hasMore && posts.length > 0 && (
+                <p className="text-center text-gray-600">No more posts to load</p>
+              )}
+              
+              {!loading && posts.length === 0 && (
+                <div className="rounded-lg bg-gray-50 p-8 text-center">
+                  <h3 className="mb-2 text-xl font-semibold text-gray-900">No Posts Yet</h3>
+                  <p className="text-gray-600">Be the first to share something amazing!</p>
+                </div>
+              )}
+            </>
+          )}
+        </motion.div>
+      </main>
     </>
   );
 }
